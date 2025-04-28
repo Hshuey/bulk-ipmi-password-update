@@ -1,0 +1,5 @@
+192.168.1.100,ADMIN,OldPass123!,NewSecurePass456!
+192.168.1.101,ADMIN,P@ssw0rd!,StrongerP@ss!
+192.168.1.102,ADMIN,Super$ecret,UltraSafe123!
+192.168.1.103,ADMIN,OldOne!23,NewOne!45
+192.168.1.104,ADMIN,WeakP@ss1,BetterP@ss2
