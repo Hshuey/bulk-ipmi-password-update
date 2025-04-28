@@ -19,14 +19,14 @@ SUCCESS_LOG = "success.log"
 FAILURE_LOG = "failure.log"
 BADLINES_LOG = "badlines.log"
 
-async def change_ipmi_password(ip, username, old_password, new_password, attempt=1):
+async def change_ipmi_password(ip, username, old_admin_password, user_id, new_password, attempt=1):
     command = [
         "ipmitool",
         "-I", "lanplus",
         "-H", ip,
         "-U", username,
-        "-P", old_password,
-        "user", "set", "password", "2", new_password
+        "-P", old_admin_password,
+        "user", "set", "password", user_id, new_password
     ]
 
     async with semaphore:
@@ -69,23 +69,35 @@ async def change_ipmi_password(ip, username, old_password, new_password, attempt
 
 async def process_row(row, line_num):
     try:
-        if len(row) != 4:
+        if len(row) != 5:
             log_badline(line_num, f"Invalid format: {row}")
             return False, f"Line {line_num}: Invalid format", row
 
-        ip, username, old_password, new_password = [x.strip() for x in row]
+        ip, username, old_admin_password, new_admin_password, new_user_password = [x.strip() for x in row]
 
         # Check for empty fields
-        if not ip or not username or not old_password or not new_password:
+        if not ip or not username or not old_admin_password or not new_admin_password:
             log_badline(line_num, f"Missing data: {row}")
             return False, f"Line {line_num}: Missing data", row
 
-        success, ip, message = await change_ipmi_password(ip, username, old_password, new_password)
+        # If new_user_password is present, attempt to set it first
+        if new_user_password:
+            success, ip, message = await change_ipmi_password(ip, username, old_admin_password, '3', new_user_password)
+
+            # If it failed, retry once if allowed
+            if not success and RETRIES > 0:
+                print(f"{YELLOW}[!] Retry {ip} user account after failure: {message}{RESET}")
+                success, ip, message = await change_ipmi_password(ip, username, old_admin_password, '3', new_user_password, attempt=2)
+
+            return success, ip, message
+
+        # Attempt to set the new ADMIN password
+        success, ip, message = await change_ipmi_password(ip, username, old_admin_password, '2', new_admin_password)
 
         # If it failed, retry once if allowed
         if not success and RETRIES > 0:
-            print(f"{YELLOW}[!] Retry {ip} after failure: {message}{RESET}")
-            success, ip, message = await change_ipmi_password(ip, username, old_password, new_password, attempt=2)
+            print(f"{YELLOW}[!] Retry {ip} admin account after failure: {message}{RESET}")
+            success, ip, message = await change_ipmi_password(ip, username, old_admin_password, '2', new_admin_password, attempt=2)
 
         return success, ip, message
 
