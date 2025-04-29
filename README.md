@@ -25,14 +25,14 @@ ip,user,oldadminpass,newadminpass,newuserpass
 Example:
 
 ```
-192.168.1.100,ADMIN,OldPass123!,NewPass456!
+192.168.1.100,ADMIN,OldPass123!,NewPass456!,
 192.168.1.101,ADMIN,P@ssword,StrongerP@ss!,UserP@ss!
 192.168.1.102,ADMIN,pa$$word3,MyNewP@ssw0rd,UserNewP@ssw0rd
 ```
 
 - No header row needed.
 - Each line represents one server to update.
-- The last column (newuserpass) is optional.
+- The last column (newuserpass) is not optional, but input in that column is (e.g. must have 4 commas).
 
 ## How to Use
 
