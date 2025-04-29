@@ -19,6 +19,7 @@ SUCCESS_LOG = "success.log"
 FAILURE_LOG = "failure.log"
 BADLINES_LOG = "badlines.log"
 
+# Function to change IPMI user password
 async def change_ipmi_password(ip, username, old_admin_password, user_id, new_password, attempt=1):
     command = [
         "ipmitool",
@@ -51,6 +52,8 @@ async def change_ipmi_password(ip, username, old_admin_password, user_id, new_pa
                     return True, ip, "Password changed successfully"
                 else:
                     return False, ip, f"Unexpected success output: {stdout}"
+
+            # Handle common errors
             else:
                 if "Unauthorized" in stderr or "password" in stderr.lower():
                     return False, ip, "Authentication failed"
@@ -66,6 +69,7 @@ async def change_ipmi_password(ip, username, old_admin_password, user_id, new_pa
         except Exception as e:
             return False, ip, f"Unhandled Exception: {str(e)}"
 
+# Function to evaluate list of IPMI users, specifically looking for "user"
 async def find_user_id(ip, username, password, target_username="user"):
     command = [
         "ipmitool",
@@ -121,6 +125,7 @@ async def find_user_id(ip, username, password, target_username="user"):
         except Exception as e:
             return None, None, f"Exception getting user list: {str(e)}"
 
+# Function to create a new user, enable, set OPERATOR permissions, and set password
 async def create_user(ip, username, password, free_id, new_user_password, target_username="user"):
     # 1. Set the new user's name
     set_name_cmd = [
