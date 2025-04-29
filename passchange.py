@@ -52,7 +52,6 @@ async def change_ipmi_password(ip, username, old_admin_password, user_id, new_pa
                 else:
                     return False, ip, f"Unexpected success output: {stdout}"
             else:
-                # Handle common errors
                 if "Unauthorized" in stderr or "password" in stderr.lower():
                     return False, ip, "Authentication failed"
                 if "hostname" in stderr.lower() or "could not resolve" in stderr.lower():
@@ -67,6 +66,111 @@ async def change_ipmi_password(ip, username, old_admin_password, user_id, new_pa
         except Exception as e:
             return False, ip, f"Unhandled Exception: {str(e)}"
 
+async def find_user_id(ip, username, password, target_username="user"):
+    command = [
+        "ipmitool",
+        "-I", "lanplus",
+        "-H", ip,
+        "-U", username,
+        "-P", password,
+        "user", "list"
+    ]
+
+    async with semaphore:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=COMMAND_TIMEOUT)
+            except asyncio.TimeoutError:
+                process.kill()
+                return None, None, "Timeout getting user list"
+
+            stdout = stdout.decode(errors='ignore').strip()
+            stderr = stderr.decode(errors='ignore').strip()
+
+            if process.returncode != 0:
+                return None, None, f"Error running user list: {stderr}"
+
+            user_id = None
+            free_ids = []
+
+            for line in stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    id_num, name = parts[0], parts[1]
+                    if name.lower() == target_username.lower():
+                        user_id = id_num
+                    if name == '' or name == '-':
+                        free_ids.append(id_num)
+
+            return user_id, free_ids, None
+
+        except Exception as e:
+            return None, None, f"Exception getting user list: {str(e)}"
+
+async def create_user(ip, username, password, free_id, new_user_password, target_username="user"):
+    # 1. Set the new user's name
+    set_name_cmd = [
+        "ipmitool", "-I", "lanplus",
+        "-H", ip,
+        "-U", username,
+        "-P", password,
+        "user", "set", "name", free_id, target_username
+    ]
+    # 2. Enable the new user
+    enable_cmd = [
+        "ipmitool", "-I", "lanplus",
+        "-H", ip,
+        "-U", username,
+        "-P", password,
+        "user", "enable", free_id
+    ]
+    # 3. Set privilege (to user level, safer)
+    priv_cmd = [
+        "ipmitool", "-I", "lanplus",
+        "-H", ip,
+        "-U", username,
+        "-P", password,
+        "user", "priv", free_id, "2"
+    ]
+    # 4. Set the new user's password
+    password_cmd = [
+        "ipmitool", "-I", "lanplus",
+        "-H", ip,
+        "-U", username,
+        "-P", password,
+        "user", "set", "password", free_id, new_user_password
+    ]
+
+    async with semaphore:
+        try:
+            cmds = [set_name_cmd, enable_cmd, priv_cmd, password_cmd]
+            for cmd in cmds:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+
+                try:
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=COMMAND_TIMEOUT)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    return False, f"Timeout during user creation step"
+
+                if process.returncode != 0:
+                    return False, stderr.decode(errors='ignore').strip()
+
+            return True, f"Created user '{target_username}' in slot {free_id}"
+
+        except Exception as e:
+            return False, f"Exception during user creation: {str(e)}"
+
 async def process_row(row, line_num):
     try:
         if len(row) != 5:
@@ -75,26 +179,28 @@ async def process_row(row, line_num):
 
         ip, username, old_admin_password, new_admin_password, new_user_password = [x.strip() for x in row]
 
-        # Check for empty fields
         if not ip or not username or not old_admin_password or not new_admin_password:
             log_badline(line_num, f"Missing data: {row}")
             return False, f"Line {line_num}: Missing data", row
 
-        # If new_user_password is present, attempt to set it first
         if new_user_password:
-            success, ip, message = await change_ipmi_password(ip, username, old_admin_password, '3', new_user_password)
+            user_id, free_ids, error = await find_user_id(ip, username, old_admin_password)
+            if user_id:
+                success, ip, message = await change_ipmi_password(ip, username, old_admin_password, user_id, new_user_password)
+                if not success and RETRIES > 0:
+                    print(f"{YELLOW}[!] Retry {ip} user account after failure: {message}{RESET}")
+                    success, ip, message = await change_ipmi_password(ip, username, old_admin_password, user_id, new_user_password, attempt=2)
 
-            # If it failed, retry once if allowed
-            if not success and RETRIES > 0:
-                print(f"{YELLOW}[!] Retry {ip} user account after failure: {message}{RESET}")
-                success, ip, message = await change_ipmi_password(ip, username, old_admin_password, '3', new_user_password, attempt=2)
+            elif free_ids:
+                first_free_id = free_ids[0]
+                print(f"{YELLOW}[!] No existing 'user' found on {ip}, creating in slot {first_free_id}{RESET}")
+                success, message = await create_user(ip, username, old_admin_password, first_free_id, new_user_password)
+                if not success:
+                    print(f"{RED}[-] Failed to create 'user' on {ip}: {message}{RESET}")
+            else:
+                print(f"{RED}[-] No available user slots to create 'user' on {ip}{RESET}")
 
-            return success, ip, message
-
-        # Attempt to set the new ADMIN password
         success, ip, message = await change_ipmi_password(ip, username, old_admin_password, '2', new_admin_password)
-
-        # If it failed, retry once if allowed
         if not success and RETRIES > 0:
             print(f"{YELLOW}[!] Retry {ip} admin account after failure: {message}{RESET}")
             success, ip, message = await change_ipmi_password(ip, username, old_admin_password, '2', new_admin_password, attempt=2)
@@ -121,7 +227,6 @@ async def main():
     input_file = "input.csv"
     tasks = []
 
-    # Clear logs
     open(SUCCESS_LOG, 'w').close()
     open(FAILURE_LOG, 'w').close()
     open(BADLINES_LOG, 'w').close()
@@ -160,7 +265,6 @@ async def main():
         except Exception as e:
             failures.append(("Post-Processing Error", str(e)))
 
-    # Summary
     print("\n--- SUMMARY ---")
     print(f"{GREEN}Successful changes: {len(successes)}{RESET}")
     print(f"{RED}Failures: {len(failures)}{RESET}")
