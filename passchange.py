@@ -73,6 +73,7 @@ async def find_user_id(ip, username, password, target_username="user"):
         "-H", ip,
         "-U", username,
         "-P", password,
+        "-c",
         "user", "list"
     ]
 
@@ -96,16 +97,23 @@ async def find_user_id(ip, username, password, target_username="user"):
             if process.returncode != 0:
                 return None, None, f"Error running user list: {stderr}"
 
+            lines = stdout.splitlines()
+            if not lines:
+                return None, None, "No output from ipmitool"
+
             user_id = None
             free_ids = []
 
-            for line in stdout.splitlines():
-                parts = line.strip().split()
+            # Skip the first line
+            for line in lines[1:]:
+                parts = line.strip().split(',')
                 if len(parts) >= 2:
-                    id_num, name = parts[0], parts[1]
+                    id_num = parts[0].strip()
+                    name = parts[1].strip()
+
                     if name.lower() == target_username.lower():
                         user_id = id_num
-                    if name == '' or name == '-':
+                    if not name:
                         free_ids.append(id_num)
 
             return user_id, free_ids, None
@@ -130,13 +138,14 @@ async def create_user(ip, username, password, free_id, new_user_password, target
         "-P", password,
         "user", "enable", free_id
     ]
-    # 3. Set privilege (to user level, safer)
+    # 3. Set privilege (to operator level)
     priv_cmd = [
         "ipmitool", "-I", "lanplus",
         "-H", ip,
         "-U", username,
         "-P", password,
-        "user", "priv", free_id, "2"
+        "channel", "setaccess", "1", free_id,
+        "ipmi=on", "link=on", "privilege=3"
     ]
     # 4. Set the new user's password
     password_cmd = [
